@@ -113,34 +113,38 @@ function ListAccounts(knownAccounts)
 end
 
 function RefreshAccount(account, since)
-    local balanceList = queryPrivate("account_balances")
     local securities = {}
 
+    -- Trading wallet balances
+    local balanceList = queryPrivate("account_balances")
     for _, entry in pairs(balanceList) do
-        if type(entry) ~= "table" then goto continue end
-
+        if type(entry) ~= "table" then goto continueBalance end
         local curr  = entry.currency and entry.currency:upper() or nil
         local total = tonumber(entry.total)
-
-        if not curr or not total or total <= 0 then goto continue end
-
-        local price = getPrice(curr)
-
-        if price and price > 0 then
-            local name = currencyNames[curr] or curr
-            securities[#securities + 1] = {
-                name     = name,
-                market   = market,
-                currency = nil,
-                quantity = total,
-                price    = price,
-            }
-        end
-
-        ::continue::
+        if not curr or not total or total <= 0 then goto continueBalance end
+        addSecurity(securities, curr, total, "")
+        ::continueBalance::
     end
 
+    -- Note: Bitstamp earn/subscriptions and earn/transactions endpoints return
+    -- "Authentication Failed" for all API keys regardless of permissions.
+    -- Earn balances cannot currently be fetched via the Bitstamp REST API.
+
     return { securities = securities }
+end
+
+function addSecurity(securities, curr, amount, label)
+    local price = getPrice(curr)
+    if price and price > 0 then
+        local name = (currencyNames[curr] or curr) .. label
+        securities[#securities + 1] = {
+            name     = name,
+            market   = market,
+            currency = nil,
+            quantity = amount,
+            price    = price,
+        }
+    end
 end
 
 function EndSession()
@@ -205,7 +209,40 @@ function queryPrivate(method)
     }
 
     local connection = Connection()
-    local content = connection:request("POST", url .. path, nil, nil, headers)
+    local content = connection:request("POST", url .. path, "", "", headers)
+    return JSON(content):dictionary()
+end
+
+-- GET variant of private auth (earn/subscriptions uses GET, not POST)
+function queryPrivateGet(method)
+    local path        = string.format("/api/%s/%s/", apiVersion, method)
+    local nonce       = generateUUID()
+    local timestamp   = string.format("%d", math.floor(MM.time() * 1000))
+    local authVersion = "v2"
+    local host        = "www.bitstamp.net"
+
+    local message = "BITSTAMP " .. apiKey
+        .. "GET"
+        .. host
+        .. path
+        .. ""           -- empty query string
+        .. nonce
+        .. timestamp
+        .. authVersion
+        .. ""           -- empty body
+
+    local signature = string.upper(bin2hex(MM.hmac256(apiSecret, message)))
+
+    local headers = {
+        ["X-Auth"]           = "BITSTAMP " .. apiKey,
+        ["X-Auth-Signature"] = signature,
+        ["X-Auth-Nonce"]     = nonce,
+        ["X-Auth-Timestamp"] = timestamp,
+        ["X-Auth-Version"]   = authVersion,
+    }
+
+    local connection = Connection()
+    local content = connection:request("GET", url .. path, nil, nil, headers)
     return JSON(content):dictionary()
 end
 
